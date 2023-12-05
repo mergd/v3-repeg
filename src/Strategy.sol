@@ -23,12 +23,16 @@ import {IPair} from "./interfaces/IPair.sol";
 contract Strategy is BaseStrategy {
     using SafeERC20 for ERC20;
 
+    event PriceTargetSet(uint256 targetPrice);
+    event DepositCapSet(uint256 depositCap);
+
     // USDC.e on Polygon – token0
     ERC20 public constant USDC = ERC20(0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174);
 
     // token1
     ERC20 public constant USDR = ERC20(0x40379a439D4F6795B6fc9aa5687dB461677A2dBa);
 
+    // USDC_USDR pair on
     IPair public constant USDC_USDR = IPair(0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174);
 
     uint256 public constant SCALAR = 1e6;
@@ -256,12 +260,6 @@ contract Strategy is BaseStrategy {
      *
      */
     function _emergencyWithdraw(uint256 _amount) internal override {
-        // TODO: If desired implement simple logic to free deployed funds.
-
-        // EX:
-        // _amount = min(_amount, aToken.balanceOf(address(this)));
-        // _freeFunds(_amount);
-
         USDC_USDR.swap(_amount, 0, address(this), "");
     }
 
@@ -274,14 +272,20 @@ contract Strategy is BaseStrategy {
     function setDepositCap(uint256 _amount) external onlyManagement {
         // Deposit cap is not retroactive
         depositLimit = _amount;
+
+        emit DepositCapSet(_amount);
     }
 
     function setPriceTarget(uint256 _targetPrice) external onlyManagement {
         targetPrice = _targetPrice;
+
+        emit PriceTargetSet(_targetPrice);
     }
 
     function governanceRecoverUnsupported(ERC20 _asset, uint256 _amount, address _recipient) external onlyManagement {
-        require(asset != USDR || _asset != USDC, "Strategy: asset");
+        bool _shutdown = TokenizedStrategy.isShutdown();
+        // If strategy isn't shut down – the base assets can't be withdrawn
+        require(!_shutdown && asset != USDR || _asset != USDC, "Strategy: asset");
         _asset.safeTransfer(_recipient, _amount);
     }
 
