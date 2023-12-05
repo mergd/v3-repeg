@@ -70,9 +70,7 @@ contract Setup is ExtendedTest, IEvents {
 
     function setUpStrategy() public returns (address) {
         // we save the strategy as a IStrategyInterface to give it the needed interface
-        IStrategyInterface _strategy = IStrategyInterface(
-            address(new Strategy(address(asset), "Tokenized Strategy"))
-        );
+        IStrategyInterface _strategy = IStrategyInterface(address(new Strategy(address(asset), "Tokenized Strategy")));
 
         // set keeper
         _strategy.setKeeper(keeper);
@@ -87,11 +85,7 @@ contract Setup is ExtendedTest, IEvents {
         return address(_strategy);
     }
 
-    function depositIntoStrategy(
-        IStrategyInterface _strategy,
-        address _user,
-        uint256 _amount
-    ) public {
+    function depositIntoStrategy(IStrategyInterface _strategy, address _user, uint256 _amount) public {
         vm.prank(_user);
         asset.approve(address(_strategy), _amount);
 
@@ -99,11 +93,7 @@ contract Setup is ExtendedTest, IEvents {
         _strategy.deposit(_amount, _user);
     }
 
-    function mintAndDepositIntoStrategy(
-        IStrategyInterface _strategy,
-        address _user,
-        uint256 _amount
-    ) public {
+    function mintAndDepositIntoStrategy(IStrategyInterface _strategy, address _user, uint256 _amount) public {
         airdrop(asset, _user, _amount);
         depositIntoStrategy(_strategy, _user, _amount);
     }
