@@ -3,7 +3,7 @@ pragma solidity 0.8.18;
 
 import {BaseStrategy, ERC20} from "@tokenized-strategy/BaseStrategy.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-
+import {IPair} from "./interfaces/IPair.sol";
 // Import interfaces for many popular DeFi projects, or add your own!
 //import "../interfaces/<protocol>/<Interface>.sol";
 
@@ -23,10 +23,23 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 contract Strategy is BaseStrategy {
     using SafeERC20 for ERC20;
 
-    constructor(
-        address _asset,
-        string memory _name
-    ) BaseStrategy(_asset, _name) {}
+    // USDC.e on Polygon – token0
+    ERC20 public constant USDC = ERC20(0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174);
+
+    // token1
+    ERC20 public constant USDR = ERC20(0x40379a439D4F6795B6fc9aa5687dB461677A2dBa);
+
+    IPair public constant USDC_USDR = IPair(0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174);
+
+    uint256 public constant SCALAR = 1e6;
+
+    // Target price, scaled by SCALAR
+    uint256 public targetPrice;
+
+    constructor(address _asset, string memory _name) BaseStrategy(_asset, _name) {
+        USDR.approve(address(USDC_USDR), type(uint256).max);
+        USDC.approve(address(USDC_USDR), type(uint256).max);
+    }
 
     /*//////////////////////////////////////////////////////////////
                 NEEDED TO BE OVERRIDDEN BY STRATEGIST
@@ -44,9 +57,13 @@ contract Strategy is BaseStrategy {
      * to deposit in the yield source.
      */
     function _deployFunds(uint256 _amount) internal override {
-        // TODO: implement deposit logic EX:
-        //
-        //      lendingPool.deposit(address(asset), _amount ,0);
+        if (depositLimit < type(uint256).max) {
+            if (depositLimit < _amount) revert("Deposit cap exceeded");
+            depositLimit -= _amount;
+        }
+        uint256 _usdrOut = ((USDC_USDR.current(address(USDC), _amount) * 99) / 100);
+
+        USDC_USDR.swap(0, _usdrOut, address(this), "");
     }
 
     /**
@@ -71,9 +88,11 @@ contract Strategy is BaseStrategy {
      * @param _amount, The amount of 'asset' to be freed.
      */
     function _freeFunds(uint256 _amount) internal override {
-        // TODO: implement withdraw logic EX:
-        //
-        //      lendingPool.withdraw(address(asset), _amount);
+        if (_amount < USDC.balanceOf(address(this))) revert("Not enough funds to withdraw");
+
+        if (depositLimit < type(uint256).max) {
+            depositLimit += _amount;
+        }
     }
 
     /**
@@ -98,19 +117,8 @@ contract Strategy is BaseStrategy {
      * @return _totalAssets A trusted and accurate account for the total
      * amount of 'asset' the strategy currently holds including idle funds.
      */
-    function _harvestAndReport()
-        internal
-        override
-        returns (uint256 _totalAssets)
-    {
-        // TODO: Implement harvesting logic and accurate accounting EX:
-        //
-        //      if(!TokenizedStrategy.isShutdown()) {
-        //          _claimAndSellRewards();
-        //      }
-        //      _totalAssets = aToken.balanceOf(address(this)) + asset.balanceOf(address(this));
-        //
-        _totalAssets = asset.balanceOf(address(this));
+    function _harvestAndReport() internal view override returns (uint256 _totalAssets) {
+        _totalAssets = USDC_USDR.current(address(USDR), USDR.balanceOf(address(this)));
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -138,10 +146,15 @@ contract Strategy is BaseStrategy {
      * after this has finished and will have no effect on PPS of the strategy
      * till report() is called.
      *
-     * @param _totalIdle The current amount of idle funds that are available to deploy.
      *
-    function _tend(uint256 _totalIdle) internal override {}
-    */
+     */
+    function _tend(uint256) internal override {
+        uint256 _usdrBal = USDR.balanceOf(address(this));
+        // Calculate amount out, in addition to slippage
+        uint256 _amountOut = ((USDC_USDR.current(address(USDR), _usdrBal) * SCALAR / _usdrBal) * 99) / 100;
+
+        USDC_USDR.swap(_amountOut, 0, address(this), "");
+    }
 
     /**
      * @dev Optional trigger to override if tend() will be used by the strategy.
@@ -149,8 +162,15 @@ contract Strategy is BaseStrategy {
      *
      * @return . Should return true if tend() should be called by keeper or false if not.
      *
-    function _tendTrigger() internal view override returns (bool) {}
-    */
+     */
+    function _tendTrigger() internal view override returns (bool) {
+        uint256 _usdrBal = USDR.balanceOf(address(this));
+        // If the price is above the target price, sell USDR for USDC
+        if (USDC_USDR.current(address(USDR), _usdrBal) * SCALAR / _usdrBal >= targetPrice) {
+            return true;
+        }
+        return false;
+    }
 
     /**
      * @notice Gets the max amount of `asset` that an address can deposit.
@@ -173,16 +193,20 @@ contract Strategy is BaseStrategy {
      * @param . The address that is depositing into the strategy.
      * @return . The available amount the `_owner` can deposit in terms of `asset`
      *
-    function availableDepositLimit(
-        address _owner
-    ) public view override returns (uint256) {
-        TODO: If desired Implement deposit limit logic and any needed state variables .
-        
-        EX:    
-            uint256 totalAssets = TokenizedStrategy.totalAssets();
-            return totalAssets >= depositLimit ? 0 : depositLimit - totalAssets;
+     * function availableDepositLimit(
+     *     address _owner
+     * ) public view override returns (uint256) {
+     *     TODO: If desired Implement deposit limit logic and any needed state variables .
+     *
+     *     EX:
+     *         uint256 totalAssets = TokenizedStrategy.totalAssets();
+     *         return totalAssets >= depositLimit ? 0 : depositLimit - totalAssets;
+     * }
+     */
+
+    function availableDepositLimit(address) public view override returns (uint256) {
+        return depositLimit;
     }
-    */
 
     /**
      * @notice Gets the max amount of `asset` that can be withdrawn.
@@ -202,15 +226,12 @@ contract Strategy is BaseStrategy {
      * @param . The address that is withdrawing from the strategy.
      * @return . The available amount that can be withdrawn in terms of `asset`
      *
-    function availableWithdrawLimit(
-        address _owner
-    ) public view override returns (uint256) {
-        TODO: If desired Implement withdraw limit logic and any needed state variables.
-        
-        EX:    
-            return TokenizedStrategy.totalIdle();
+     *     TODO: If desired Implement withdraw limit logic and any needed state variables.
+     */
+
+    function availableWithdrawLimit(address) public view override returns (uint256) {
+        return USDC.balanceOf(address(this));
     }
-    */
 
     /**
      * @dev Optional function for a strategist to override that will
@@ -233,13 +254,38 @@ contract Strategy is BaseStrategy {
      *
      * @param _amount The amount of asset to attempt to free.
      *
+     */
     function _emergencyWithdraw(uint256 _amount) internal override {
-        TODO: If desired implement simple logic to free deployed funds.
+        // TODO: If desired implement simple logic to free deployed funds.
 
-        EX:
-            _amount = min(_amount, aToken.balanceOf(address(this)));
-            _freeFunds(_amount);
+        // EX:
+        // _amount = min(_amount, aToken.balanceOf(address(this)));
+        // _freeFunds(_amount);
+
+        USDC_USDR.swap(_amount, 0, address(this), "");
     }
 
-    */
+    /* -------------------------------------------------------------------------- */
+    /*                            Additional Functions                            */
+    /* -------------------------------------------------------------------------- */
+
+    uint256 depositLimit = type(uint256).max;
+
+    function setDepositCap(uint256 _amount) external onlyManagement {
+        // Deposit cap is not retroactive
+        depositLimit = _amount;
+    }
+
+    function setPriceTarget(uint256 _targetPrice) external onlyManagement {
+        targetPrice = _targetPrice;
+    }
+
+    function governanceRecoverUnsupported(ERC20 _asset, uint256 _amount, address _recipient) external onlyManagement {
+        require(asset != USDR || _asset != USDC, "Strategy: asset");
+        _asset.safeTransfer(_recipient, _amount);
+    }
+
+    function min(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a < b ? a : b;
+    }
 }
